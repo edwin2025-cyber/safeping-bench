@@ -72,6 +72,12 @@ LORA_MISO = _cfg("LORA_MISO", 9)
 LORA_CS = _cfg("LORA_CS", 26)
 LORA_RST = _cfg("LORA_RST", 6)
 
+# GPS wing (UART). Wing TX goes to the board RX pin, wing RX to the board TX pin.
+GPS_UART = _cfg("GPS_UART", 1)
+GPS_TX = _cfg("GPS_TX", 11)
+GPS_RX = _cfg("GPS_RX", 12)
+GPS_MAX_AGE_S = _cfg("GPS_MAX_AGE_S", 60)         # a fix older than this is not sent
+
 # Timing, in milliseconds
 DEBOUNCE_MS = _cfg("DEBOUNCE_MS", 30)
 MULTI_WINDOW_MS = _cfg("MULTI_WINDOW_MS", 600)   # gap that ends a press pattern
@@ -163,9 +169,43 @@ def next_counter():
 
 
 # ---------- sensors (stubs until the hardware is on the bench) ----------
+_gps = None
+
+
+def gps_start():
+    """Start the GPS wing. Returns True if it started. The Fob works without it."""
+    global _gps
+    try:
+        import gps as gps_module
+        _gps = gps_module.GPS(uart_id=GPS_UART, tx=GPS_TX, rx=GPS_RX)
+        return True
+    except Exception as err:             # no gps.py on the board, or the pins are wrong
+        print("GPS off:", err)
+        _gps = None
+        return False
+
+
+def gps_poll():
+    """Read any new GPS data. Called many times a second so the buffer never fills."""
+    if _gps is not None:
+        try:
+            _gps.update()
+        except Exception as err:
+            print("GPS read error:", err)
+
+
 def read_gps():
-    """Return (lat_microdeg, lon_microdeg, accuracy_m) or None. Written when the GPS arrives."""
-    return None
+    """Return (lat_microdeg, lon_microdeg, accuracy_m) or None if there is no recent fix."""
+    if _gps is None or not _gps.has_fix or _gps.lat_e6 is None:
+        return None
+    age = _gps.age_s()
+    if age is None or age > GPS_MAX_AGE_S:
+        return None
+    try:
+        acc = int(float(_gps.hdop) * 5)  # rough: HDOP times about 5 m
+    except ValueError:
+        acc = 10
+    return _gps.lat_e6, _gps.lon_e6, max(acc, 1)
 
 
 def read_sensors():
@@ -391,12 +431,14 @@ class Fob:
     def service(self, now):
         self.led.update(now)
         self.motor.update(now)
+        gps_poll()
 
     def boot(self):
         print("SafePing Fob", DEVICE_ID)
         print("LoRa fallback on: CS", LORA_CS, "RST", LORA_RST)
         if SECRET_KEY.startswith("paste-the-key"):
             print("WARNING: SECRET_KEY is the placeholder. The server will reject every message.")
+        print("GPS on" if gps_start() else "GPS not started, alerts will have no location")
         self.led.show(WHITE, duration_ms=200)
         self.motor.run("tick")
         time.sleep_ms(250)
@@ -422,6 +464,10 @@ class Fob:
         """Build, sign and send one message. Returns True if the broker accepted it."""
         self.motor.hold = self.motor.hold and kind == "MEDICAL"
         msg = build_message(kind)
+        if "lat" in msg:
+            print("location sent, accuracy about", msg["acc"], "m")
+        else:
+            print("no GPS fix, sending without a location")
         payload = json.dumps(msg)
         print("SAFEPING_MSG " + payload)
         for attempt in range(SEND_ATTEMPTS):
