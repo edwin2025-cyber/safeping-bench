@@ -47,7 +47,7 @@ WAIT_FOR_RELAY_S = 5      # warn if the Relay has not printed an alert this long
 CSV_COLUMNS = [
     "ctr", "type", "fob_time", "fob_result", "relay_time", "received", "delay_s",
     "lat", "lon", "acc_m", "lat_deg", "lon_deg", "rssi_dbm", "snr_db", "same_message",
-    "lora_retry", "p_pa", "t_c", "bat_pct",
+    "lora_retry", "p_pa", "t_c", "bat_pct", "confirmed", "ack_try",
 ]
 
 
@@ -76,6 +76,8 @@ class Session:
         self.last_fob_ctr = None
         self.relay_waiting = None # SAFEPING_MSG seen on the Relay, waiting for its "from ..." line
         self.not_safeping = 0
+        self.duplicates = 0
+        self.acks_rejected = 0
         self.cancelled = 0
         self.warned = set()
         self.notes = []
@@ -96,7 +98,21 @@ class Session:
             entry = self.fob[self.last_fob_ctr]
             if line.startswith("sent over LoRa"):
                 entry["result"] = "LoRa"
+                entry["confirmed"] = "confirmed" in line
                 return None
+            if line.startswith("ACK received"):
+                entry["ack_try"] = line.split("try")[-1].strip(" )")
+                return "FOB  " + line
+            if line.startswith("ACK missing"):
+                entry["ack_missing"] = entry.get("ack_missing", 0) + 1
+                return "FOB  " + line
+            if line.startswith("ACK rejected") or line.startswith("ACK not checked"):
+                if line.startswith("ACK rejected"):
+                    self.acks_rejected += 1
+                return "FOB  " + line
+            if line.startswith("NOT CONFIRMED"):
+                entry["result"] = "not confirmed"
+                return "FOB  NOT CONFIRMED ctr {} (no ack from the Relay)".format(self.last_fob_ctr)
             if line.startswith("sent ") and " ctr " in line:
                 entry["result"] = "WiFi"
                 return None
@@ -132,10 +148,18 @@ class Session:
             ctr = msg["ctr"]
             self.relay[ctr] = {"time": t0, "msg": msg, "raw": raw, "rssi": rssi, "snr": snr}
             self._seen(ctr)
-            return "RELAY got  ctr {} {} signal {} dBm snr {}".format(ctr, msg.get("type"), rssi, snr)
+            text = "RELAY got  ctr {} {} signal {} dBm snr {}".format(ctr, msg.get("type"), rssi, snr)
+            if "p" in msg:
+                text += "  p {} Pa".format(msg["p"])
+            return text
         if line.startswith("ignored a packet"):
             self.not_safeping += 1
             return "RELAY heard a packet that is not a SafePing alert"
+        if line.startswith("duplicate of"):
+            self.duplicates += 1
+            return "RELAY " + line
+        if line.startswith("Relay could not") or line.startswith("no ack key"):
+            return "RELAY " + line
         if line.startswith("Traceback") or "Error" in line or "Relay radio" in line:
             return "RELAY " + line
         return None
@@ -184,11 +208,17 @@ class Session:
                 "p_pa": msg.get("p", ""),
                 "t_c": "{:.2f}".format(msg["t"] / 100) if "t" in msg else "",
                 "bat_pct": msg.get("bat", ""),
+                "confirmed": ("yes" if f.get("confirmed") else "no") if f and f["result"] in ("LoRa", "not confirmed") else "",
+                "ack_try": f.get("ack_try", "") if f else "",
             })
         return rows
 
     def summary(self, end_t):
-        sent_lora = [c for c, f in self.fob.items() if f["result"] == "LoRa"]
+        sent_lora = [c for c, f in self.fob.items() if f["result"] in ("LoRa", "not confirmed")]
+        confirmed = [c for c, f in self.fob.items() if f.get("confirmed")]
+        unconfirmed = sorted(c for c, f in self.fob.items() if f["result"] == "not confirmed")
+        unconfirmed_but_heard = [c for c in unconfirmed if c in self.relay]
+        needed_resend = sorted(c for c, f in self.fob.items() if f.get("ack_missing"))
         not_sent = [c for c, f in self.fob.items() if f["result"] in ("NOT SENT", "LoRa failed")]
         lost = sorted(c for c in sent_lora if c not in self.relay)
         relay_only = sorted(c for c in self.relay if c not in self.fob)
@@ -214,6 +244,12 @@ class Session:
             "  LoRa had a problem:        {}{}".format(len(retried), self._list(retried)),
             "  with a GPS position:       {}".format(len(with_gps)),
             "Relay received (of LoRa):    {} of {}".format(received, len(sent_lora)),
+            "Confirmed by ack:            {} of {}".format(len(confirmed), len(sent_lora)),
+            "  needed a resend:           {}{}".format(len(needed_resend), self._list(needed_resend)),
+            "  NOT confirmed:             {}{}".format(len(unconfirmed), self._list(unconfirmed)),
+            "  not confirmed but Relay had it (ack lost): {}".format(len(unconfirmed_but_heard)),
+            "Duplicates at the Relay:     {}".format(self.duplicates),
+            "Fake or wrong acks rejected: {}".format(self.acks_rejected),
             "LOST (sent, never heard):    {}{}".format(len(lost), self._list(lost)),
             "Relay only (not in Fob log): {}{}".format(len(relay_only), self._list(relay_only)),
             "Changed on the way:          {}{}".format(len(changed), self._list(changed)),

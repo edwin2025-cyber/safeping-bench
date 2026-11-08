@@ -1,22 +1,82 @@
-IO0 = GPIO 0, confirmed
-IO1 = GPIO 1, confirmed
-IO2 = GPIO 2, confirmed
-IO3 = GPIO 3, confirmed
-IO4 = GPIO 4, confirmed
-IO5 = GPIO 5, confirmed
+# SafePing bench log
 
-Lesson 4: Fob sends, Relay receives. Signal -15 to -52 dBm at about 1 to 2 m, 10 of 11 received.
+Short notes on what I tested on the real boards, what happened, and what changed.
+Newest dates are at the bottom. Full test runs are in `logs/` (see `logs/README.md`).
 
-Indoor, 30 cm: all received, battery works, signal -6 to -52 dBm.
+## Current hardware (as of 2026-11-07)
 
-Nov 6. Full Fob main.py now runs on the real board. Presses give STATUS, SUSPICIOUS, MEDICAL and SILENT, and a quick tap in the 2 second window cancels. With WiFi off, every alert goes out over LoRa and the Relay reads it. Fixed: WiFi state error, and the Relay was cutting packets because it listened in 1 second windows (now 60 seconds). GPS wing is wired in. Indoors it gets a fix but is 150 to 200 ft off, which is expected indoors. Not done yet: outdoor GPS check, motor circuit, WiFi and server, real secret key, NTP clock, battery reading.
+| Part | Connection | Notes |
+|---|---|---|
+| LoRa radio (RFM95W) | SCK 10, MOSI 8, MISO 9, CS 26, RST 6. G0 not wired | VIN on 3V3 with **direct jumpers** from the board's 3V3 and GND (not through the breadboard rail), and a **100 uF capacitor** across VIN and GND at the breakout |
+| Button | IO1 to GND, internal pull-up | |
+| Status LED | onboard NeoPixel, IO27 | NeoPixel Mini PCB not soldered yet |
+| Motor | IO3, 1 k to PN2222 base, emitter to GND, motor from 3V3 to collector, 1N4001 across the motor (stripe to 3V3) | motor wires tinned. 10 k pull-down from base to GND still to add |
+| GPS wing | wing TX to IO12, wing RX to IO11, UART1 9600 | |
+| I2C | SDA 23, SCL 24 (`I2C(0)`) | 0x36 battery gauge (MAX17048, on the board), 0x77 BME280 (Qwiic) |
+| Battery | 3.7 V 420 mAh LiPo (label says 420, not 500) | With the LiPo plugged in, unplugging USB does not reset the board. Use RST |
+
+## Earlier lessons (before the full Fob program)
+
+- Lesson 1 pin walk: IO0, IO1, IO2, IO3, IO4 and IO5 all confirmed.
+- Lesson 4: Fob sends, Relay receives. About 1 to 2 m apart: signal -15 to -52 dBm, 10 of 11 received.
+- Indoors at 30 cm: all received, battery works, signal -6 to -52 dBm.
+
+## 2026-11-06
+
+- Full Fob `main.py` runs on the real board. 1 press STATUS, 2 SUSPICIOUS, 3 or more MEDICAL, hold SILENT. A quick tap in the 2 s window cancels.
+- With WiFi off, every alert goes out over LoRa and the Relay reads it.
+- Fixed: WiFi state error. Fixed: the Relay cut packets because it listened in 1 s windows (now 60 s).
+- GPS wing wired in. Indoors it gets a fix but is 150 to 200 ft off, which is expected indoors.
 
 ## 2026-11-06 (night)
 
-- Start checks passed. Fob main.py is the full program (21,663 bytes) on the board. Relay now runs relay_alert_listen.py as main.py.
-- Added tests/field_log.py. Logs both boards to logs/ (raw, CSV, summary). Desk test: 4 of 4 received, 1 cancel sent nothing.
-- Outdoor GPS (small area, practice run, not formal DT-10): fix on every press, acc 3 to 6 m, position stayed within about 1 to 3 m. Indoor was about 25 m.
-- Outdoors every LoRa send timed out until I replugged the Fob. Lid test and wiggle test did not reproduce it. Cause not proven.
-- Found a worse bug: after _radio.reset() the radio goes to mode 0x09 and lora_send() returns True, but the Relay hears nothing. False "sent".
-- Fix written (sx127x check(), lora_send retry, Relay recovery). Applied to the repo. NOT on the boards yet, NOT tested on hardware.
-- Battery is 420 mAh (label), not 500.
+- Start checks passed. Fob `main.py` is the full program (21,663 bytes) on the board. Relay runs `relay_alert_listen.py` as `main.py`.
+- Added `tests/field_log.py`. It logs both boards at once (raw, CSV, summary). Desk test: 4 of 4 received, 1 cancel sent nothing.
+- Outdoor GPS (small area, practice, not the formal DT-10): fix on every press, acc 3 to 6 m, position stayed within about 1 to 3 m. Indoors it wandered about 25 m.
+- Outdoors every LoRa send timed out until I replugged the Fob. Lid test and wiggle test did not reproduce it. (Solved on Nov 7: weak radio power path.)
+- Found a worse bug: after `_radio.reset()` the radio goes to mode 0x09 and `lora_send()` returned True, but the Relay heard nothing. A false "sent".
+
+## 2026-11-07
+
+**LoRa recovery fix (on both boards)**
+- `sx127x.py` checks the radio before every send and receive. `main.py` sets the radio up again and retries once. The Relay recovers by itself.
+- Test A: 2 of 2 received. Test B: forced a radio reset, the Fob caught it (mode 0x09), set the radio up again and sent. The Relay heard both packets. False "sent" is fixed.
+
+**Motor**
+- Built the PN2222, 1 k, 1N4001 circuit on IO3. Some patterns did not buzz: the stranded motor wires only touched the breadboard sometimes. Tinned them, fixed.
+- Chose: 100 percent strength. Sent = two 250 ms buzzes. Not sent = one 1.2 s buzz. MEDICAL pulses (200 ms on, 100 ms off) in its cancel window. No press tick (40 ms was too short to feel). STATUS keeps its single short buzz.
+- I can tell sent from not sent by feel on the bench. Recheck once it is in the case.
+- Bug: MEDICAL failed 3 of 3 because the motor was running during the send. Proved it in the REPL (motor on: send fails, motor off: send works). Fix: the motor is always off while sending. Then 7 of 7.
+
+**Sensors**
+- I2C scan: SDA 23, SCL 24, found 0x36 (battery gauge) and 0x77 (BME280).
+- Sensor check: about 99,543 Pa, noise about plus or minus 2 Pa on the desk, lifting 1 m dropped it about 12 to 15 Pa. Battery 4,218 mV, 100 percent.
+- Every alert now carries `p`, `t` and `bat`. Largest possible alert is 241 bytes (LoRa limit 255).
+- With no LiPo plugged in, `bat` still says 100 percent. That number means nothing without a battery.
+
+**Power problems and fixes**
+- USB and LiPo both plugged in (charging): 3 of 5 sent. USB only: 10 of 10. LiPo only (real use): 10 of 10.
+- Added a 100 uF capacitor across the radio's VIN and GND: USB and LiPo 10 of 10.
+- Full run outdoors: 13 of 13 received with GPS on every alert, but 4 LoRa problems, including one `version 0x00` dropout.
+- Back inside, every send failed. A register probe showed the transmit started (0x83) and dropped to sleep (0x80) within 20 ms. All settings were correct and it survived a full power cycle.
+- Fix: direct 3V3 and GND jumpers from the board to the radio's VIN and GND rows. Cause: weak power path through the breadboard. Then 9 of 9 with 0 problems, including escalation to SILENT.
+
+**Signed acks**
+- The Relay saves each new alert to `queue.txt` on its flash, then sends a signed ack. The Fob resends the same message up to 3 times. Still no valid ack: NOT CONFIRMED, orange light, long buzz.
+- The Relay's ack key lives only in its own `config.py` on the board and in `safeping-private`, never in git. It is made from the Fob's secret, so the Relay never holds the real secret.
+- Tests: 3 of 3 confirmed on try 1. Relay unplugged: NOT CONFIRMED in about 5 s. Relay back: confirmed. Wrong key on the Relay: the Fob rejected 3 of 3 acks (bad signature). Right key back: confirmed.
+
+**Other**
+- Logs moved into `logs/<date>/<time>_<label>/` with an index in `logs/README.md`.
+- The Relay sometimes hears a packet that is not a SafePing alert, probably another LoRa device nearby. It ignores them.
+- Thonny: pressing Stop during a running script caused a write timeout. Use Ctrl+C in the Shell instead.
+
+## Open items
+
+- 10 k pull-down from the motor transistor's base to GND (keeps the motor off during boot and reset).
+- Floor walk (DT-08 practice): pascals per floor and LoRa through floors.
+- Formal DT-10: 3 marked outdoor spots, 5 readings each.
+- `SECRET_KEY` is still the placeholder. Run `add_device.py` on the server, paste the real key, then redo the Relay's ack key.
+- WiFi and server: ask IT, write the Relay forwarder that sends `queue.txt` to the server.
+- Docs and CDR notes: 2 s hold (PDR says 5 s), no press tick (accessibility note says it buzzes on each press), motor off while sending, 100 uF capacitor and direct radio power, I2C pins, 420 mAh battery, final GPS module.
+- NeoPixel Mini PCB, case measurements and print.

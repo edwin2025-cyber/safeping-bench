@@ -19,7 +19,7 @@ IMPORTANT
 Usage:
     radio = SX127x(spi, cs_pin, reset_pin)
     radio.begin()
-    radio.send(b"hello")
+    radio.send(b"hello")                        # waits up to 1.5 s (a full alert takes about 0.4 s)
     packet = radio.receive(timeout_ms=5000)     # None, or (data, rssi_dbm, snr_db)
 """
 import time
@@ -172,7 +172,7 @@ class SX127x:
             raise OSError("radio lost its LoRa settings (mode 0x{:02x})".format(mode))
 
     # ---- send ----
-    def send(self, data, timeout_ms=5000):
+    def send(self, data, timeout_ms=1500):
         """Send one packet and wait until it has left the antenna. Returns True on success.
         Raises OSError if the radio is not answering or is not in LoRa mode."""
         if len(data) > MAX_PACKET:

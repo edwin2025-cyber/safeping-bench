@@ -40,6 +40,10 @@ try:
     import config
 except ImportError:
     config = None
+try:
+    import ackcheck                  # signed acks (ackcheck.py must be on the board)
+except ImportError:
+    ackcheck = None
 
 
 def _cfg(name, default):
@@ -103,6 +107,10 @@ PRESS_TICK_MS = _cfg("PRESS_TICK_MS", 0)         # buzz on each press. 0 = off (
                                                  # 2026-11-07: 40 ms was too short to feel)
 WIFI_TIMEOUT_MS = _cfg("WIFI_TIMEOUT_MS", 10000)
 SEND_ATTEMPTS = _cfg("SEND_ATTEMPTS", 3)
+LORA_ACK = _cfg("LORA_ACK", True)                # wait for the Relay to answer "ACK <id> <ctr>"
+ACK_WAIT_MS = _cfg("ACK_WAIT_MS", 1000)          # how long to listen for the ack after each send
+LORA_TRIES = _cfg("LORA_TRIES", 3)               # sends of the same message before giving up
+ACK_KEY = ackcheck.ack_key(SECRET_KEY.encode()) if ackcheck else None
 LOOP_MS = 10
 
 # Colors (red, green, blue 0-255)
@@ -331,7 +339,7 @@ def lora_send(payload):
                 if attempt == 2:
                     print("LoRa worked after setting the radio up again")
                 return True
-            print("LoRa failed: the radio never finished sending (5 s timeout)")
+            print("LoRa failed: the radio never finished sending (timeout)")
         except Exception as err:         # no radio, bad wiring, or radio lost its settings
             print("LoRa failed:", err)
         _lora_report(_radio)
@@ -339,6 +347,62 @@ def lora_send(payload):
         if attempt == 1:
             print("LoRa: setting the radio up again and trying once more")
     return False
+
+
+def _wait_for_ack(expected, wait_ms):
+    """Listen up to wait_ms for the exact signed ack. Other packets (another Fob's
+    alert, noise) are ignored and listening continues until the time is up.
+    An ack for this Fob with a wrong signature is reported and ignored."""
+    deadline = time.ticks_add(time.ticks_ms(), wait_ms)
+    while True:
+        left = time.ticks_diff(deadline, time.ticks_ms())
+        if left <= 0:
+            return False
+        try:
+            packet = _lora_radio().receive(timeout_ms=left)
+        except Exception as err:
+            print("ACK wait failed:", err)
+            return False
+        if packet is None:
+            return False
+        if packet[0] == expected:
+            return True
+        if packet[0].startswith(expected[:expected.rfind(b" ") + 1]):
+            print("ACK rejected: bad signature")       # someone faking or replaying an ack
+        elif packet[0].startswith(b"ACK " + DEVICE_ID.encode() + b" "):
+            print("ACK rejected: not for this alert")
+
+
+def lora_send_confirmed(payload, ctr, sig):
+    """Send over LoRa and wait for the Relay to confirm it stored the alert.
+
+    The Relay stores the alert in its flash, then answers with a signed ack
+    "ACK <id> <ctr> <mac>" (see ackcheck.py). If no valid ack comes back, the SAME
+    message (same ctr, same signature) is sent again, up to LORA_TRIES times.
+    Returns:
+      "confirmed"    the Relay stored it and sent a valid signed ack
+      "unconfirmed"  it left the antenna but no ack came back (the Relay may still have it)
+      "failed"       the radio could not send at all
+      "sent"         acks are switched off (LORA_ACK = False) and it left the antenna
+    Note: the ack proves the Relay stored it, not yet that the server saved it."""
+    if not LORA_ACK:
+        return "sent" if lora_send(payload) else "failed"
+    if ACK_KEY is None:                  # no ackcheck.py: we cannot check acks, so never claim one
+        if not lora_send(payload):
+            return "failed"
+        print("ACK not checked: ackcheck.py is missing on the Fob")
+        return "unconfirmed"
+    expected = ackcheck.ack_text(ACK_KEY, DEVICE_ID, ctr, sig).encode()
+    sent_once = False
+    for attempt in range(1, LORA_TRIES + 1):
+        if not lora_send(payload):       # radio problem (it already retried inside)
+            return "unconfirmed" if sent_once else "failed"
+        sent_once = True
+        if _wait_for_ack(expected, ACK_WAIT_MS):
+            print("ACK received (try {})".format(attempt))
+            return "confirmed"
+        print("ACK missing (try {} of {})".format(attempt, LORA_TRIES))
+    return "unconfirmed"
 
 
 # ---------- the message ----------
@@ -596,6 +660,12 @@ class Fob:
             print("WARNING: SECRET_KEY is the placeholder. The server will reject every message.")
         print("GPS on" if gps_start() else "GPS not started, alerts will have no location")
         print("Sensors:", sensors_start())
+        if not LORA_ACK:
+            print("LoRa acks: off")
+        elif ACK_KEY is None:
+            print("WARNING: ackcheck.py missing, LoRa alerts will never show as confirmed")
+        else:
+            print("LoRa acks: signed, waiting up to", ACK_WAIT_MS, "ms, up to", LORA_TRIES, "tries")
         self.led.show(WHITE, duration_ms=200)
         self.motor.run("tick")
         time.sleep_ms(250)
@@ -636,9 +706,16 @@ class Fob:
                 return True
             except Exception as err:
                 print("send attempt", attempt + 1, "failed:", err)
-        if lora_send(payload):
+        result = lora_send_confirmed(payload, msg["ctr"], msg["sig"])
+        if result == "confirmed":
+            print("sent over LoRa", kind, "confirmed by the Relay")
+            return True
+        if result == "sent":
             print("sent over LoRa", kind)
             return True
+        if result == "unconfirmed":
+            print("NOT CONFIRMED", kind, "(no ack from the Relay)")
+            return False
         print("NOT SENT", kind)
         return False
 

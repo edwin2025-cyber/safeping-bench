@@ -27,6 +27,11 @@ These are bench runs, not formal DT runs yet. The "Related" column says which te
 | [2026-11-07/195950_nolipo](2026-11-07/195950_nolipo/) | Same firmware, LiPo unplugged, USB only, 10 STATUS | 10 of 10 received. bat read 100 percent with no LiPo (meaningless) | power bug (debug) |
 | [2026-11-07/200408_lipoonly](2026-11-07/200408_lipoonly/) | Battery only, no USB on the Fob (real use). 10 STATUS. Relay side only | 10 of 10 received (ctr 72 to 81, no gaps) | DT-11, R5 |
 | [2026-11-07/201424_cap](2026-11-07/201424_cap/) | 100 uF capacitor across the radio VIN and GND. LiPo and USB both in (the setup that failed) | 10 of 10 received, bat 97 percent | power fix |
+| [2026-11-07/202833_fullfob](2026-11-07/202833_fullfob/) | Full Fob run outdoors, all modes plus cancel and escalation, LiPo and USB | 13 of 13 received, GPS on all, 4 LoRa problems (2 recovered on retry), one version 0x00 dropout | power bug |
+| [2026-11-07/212450_fullfob2](2026-11-07/212450_fullfob2/) | Same run after direct 3V3 and GND jumpers to the radio | 9 of 9 received, 0 LoRa problems, escalation to SILENT worked | DT-01, DT-02, DT-11, power fix |
+| [2026-11-07/214928_ack](2026-11-07/214928_ack/) | Signed acks: 3 normal, Relay unplugged, Relay back | 3 of 3 confirmed on try 1; Relay off gave NOT CONFIRMED in about 5 s; confirmed again after | DT-11, R6 |
+| [2026-11-07/215409_ackfake](2026-11-07/215409_ackfake/) | Relay given a wrong ack key on purpose | Fob rejected 3 of 3 acks (bad signature), NOT CONFIRMED, Relay still stored it | DT-04 style, cyber |
+| [2026-11-07/215521_ackfixed](2026-11-07/215521_ackfixed/) | Correct ack key put back | Confirmed on try 1 | DT-11 |
 
 ## What these runs showed (2026-11-06 and 2026-11-07)
 
