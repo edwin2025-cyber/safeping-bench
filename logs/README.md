@@ -32,6 +32,8 @@ These are bench runs, not formal DT runs yet. The "Related" column says which te
 | [2026-11-07/214928_ack](2026-11-07/214928_ack/) | Signed acks: 3 normal, Relay unplugged, Relay back | 3 of 3 confirmed on try 1; Relay off gave NOT CONFIRMED in about 5 s; confirmed again after | DT-11, R6 |
 | [2026-11-07/215409_ackfake](2026-11-07/215409_ackfake/) | Relay given a wrong ack key on purpose | Fob rejected 3 of 3 acks (bad signature), NOT CONFIRMED, Relay still stored it | DT-04 style, cyber |
 | [2026-11-07/215521_ackfixed](2026-11-07/215521_ackfixed/) | Correct ack key put back | Confirmed on try 1 | DT-11 |
+| [2026-11-07/220846_pulldown](2026-11-07/220846_pulldown/) | Check after adding the 10 k pull-down on the motor transistor | 5 of 5 confirmed on try 1 | DT-03, DT-11 |
+| [2026-11-07/222238_floorwalk](2026-11-07/222238_floorwalk/) | Floor walk from floor 3 down to G and back, Fob on LiPo, phone floor page | Buzz matched Relay 21 of 21. About 55 Pa per floor (68, 54, 42). Ground floor 1 of 4 heard | DT-08, DT-11 |
 
 ## What these runs showed (2026-11-06 and 2026-11-07)
 

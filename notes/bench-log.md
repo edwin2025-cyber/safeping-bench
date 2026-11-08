@@ -66,15 +66,26 @@ Newest dates are at the bottom. Full test runs are in `logs/` (see `logs/README.
 - The Relay's ack key lives only in its own `config.py` on the board and in `safeping-private`, never in git. It is made from the Fob's secret, so the Relay never holds the real secret.
 - Tests: 3 of 3 confirmed on try 1. Relay unplugged: NOT CONFIRMED in about 5 s. Relay back: confirmed. Wrong key on the Relay: the Fob rejected 3 of 3 acks (bad signature). Right key back: confirmed.
 
+**10 k pull-down**
+- Added 10 k from the motor transistor's base to GND. The motor stays quiet at boot. Check run: 5 of 5 confirmed on try 1, MEDICAL pulse still works.
+
 **Other**
 - Logs moved into `logs/<date>/<time>_<label>/` with an index in `logs/README.md`.
 - The Relay sometimes hears a packet that is not a SafePing alert, probably another LoRa device nearby. It ignores them.
 - Thonny: pressing Stop during a running script caused a write timeout. Use Ctrl+C in the Shell instead.
 
+**Floor walk (DT-08 practice)**
+- Relay in my room (floor 3), Fob on LiPo only, phone page logged the floor and buzz for each press.
+- Buzz matched the Relay 21 of 21: every short buzz was received, every long buzz was not. The ack does not lie.
+- Pressure: G 99,721, floor 1 99,653, floor 2 99,599, floor 3 99,557 Pa. About 55 Pa per floor on average, but not even: G to 1 is 68 Pa, 1 to 2 is 54, 2 to 3 is 42 (tall ground floor).
+- With the default 42 Pa per floor the server would get floors 1 and 3 wrong. 55 works but floor 1 is close. Better: a per-floor table on the server.
+- Drift was only 2.5 Pa over 8 minutes.
+- My room read about 17 Pa higher than the hallway on the same floor. Repeat this. Could be the building's air system.
+- LoRa from floor 3: floor 3 7/7, floor 2 4/4, floor 1 4/5, ground 1/4 (-102 dBm, SNR -4). One Relay on floor 3 does not cover the ground floor.
+
 ## Open items
 
-- 10 k pull-down from the motor transistor's base to GND (keeps the motor off during boot and reset).
-- Floor walk (DT-08 practice): pascals per floor and LoRa through floors.
+- Repeat floor walk with more ground floor readings and a room vs hallway check.
 - Formal DT-10: 3 marked outdoor spots, 5 readings each.
 - `SECRET_KEY` is still the placeholder. Run `add_device.py` on the server, paste the real key, then redo the Relay's ack key.
 - WiFi and server: ask IT, write the Relay forwarder that sends `queue.txt` to the server.
