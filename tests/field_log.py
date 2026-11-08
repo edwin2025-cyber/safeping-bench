@@ -3,9 +3,10 @@
 Reads the Fob (COM15) and the Relay (COM14) at the same time and saves one set of
 files per test run:
 
-  logs/<date>_<time>_<label>_raw.txt      every line from both boards, with laptop time
-  logs/<date>_<time>_<label>_alerts.csv   one row per alert (ctr), Fob side and Relay side
-  logs/<date>_<time>_<label>_summary.txt  sent, received, lost, not-SafePing, signal range
+  logs/<date>/<time>_<label>/<date>_<time>_<label>_raw.txt      every line, with laptop time
+  logs/<date>/<time>_<label>/<date>_<time>_<label>_alerts.csv   one row per alert (ctr)
+  logs/<date>/<time>_<label>/<date>_<time>_<label>_summary.txt  sent, received, lost, signal
+  logs/README.md is the index of every run. Add a row after each real test.
 
 The raw file is written line by line, and the CSV and summary are rewritten after
 every alert, so a crash or a dead laptop battery loses almost nothing.
@@ -311,9 +312,10 @@ def main():
         sys.exit(1)
 
     label = re.sub(r"[^A-Za-z0-9_-]", "_", args.label)
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
-    base = out / "{}_{}".format(datetime.now().strftime("%Y-%m-%d_%H%M%S"), label)
+    now = datetime.now()
+    run_dir = Path(args.out) / now.strftime("%Y-%m-%d") / "{}_{}".format(now.strftime("%H%M%S"), label)
+    run_dir.mkdir(parents=True, exist_ok=True)          # logs/<date>/<time>_<label>/
+    base = run_dir / "{}_{}".format(now.strftime("%Y-%m-%d_%H%M%S"), label)
     session = Session(label, base)
 
     q = queue.Queue()
