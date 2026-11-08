@@ -5,6 +5,7 @@
 
 from machine import Pin, SPI  # type: ignore
 import json
+import time
 import sx127x
 
 spi = SPI(1, baudrate=1000000, polarity=0, phase=0,
@@ -22,7 +23,19 @@ try:
     while True:
         # Long window on purpose. Each time receive() times out it switches the radio
         # off for a moment, which would cut a packet that is still arriving.
-        packet = radio.receive(timeout_ms=60000)
+        try:
+            packet = radio.receive(timeout_ms=60000)
+        except OSError as err:
+            # The radio reset or stopped answering. Set it up again and keep listening.
+            print("Relay radio problem:", err)
+            print("Setting the Relay radio up again")
+            time.sleep_ms(500)
+            try:
+                radio.begin()
+                print("Relay radio OK again")
+            except OSError as err2:
+                print("Relay radio still not answering:", err2)
+            continue
         if packet is None:
             continue
         data, rssi, snr = packet

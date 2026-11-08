@@ -9,11 +9,12 @@ signal strength. Settings are the common starting point for 915 MHz in the US:
 
 IMPORTANT
   * Fit the antenna BEFORE you transmit. Sending with no antenna can damage the radio.
-  * A LoRa packet holds at most 255 bytes. A full alert is about 210 to 235 bytes, so
-    keep device IDs short.
-  * Written from the SX1276 datasheet and tested against a software model of the chip.
-    It has NOT yet run on the real radio. The first real test is bringup/06_lora.py,
-    which reads the chip's version register (it must say 0x12) before anything else.
+  * A LoRa packet holds at most 255 bytes. The largest realistic alert is about 239
+    bytes, so keep device IDs short and do not add fields without checking.
+  * Runs on the real RFM95W on the bench (CS IO26, RST IO6), Fob and Relay.
+  * send() and receive() call check() first. If the radio has reset and lost its LoRa
+    settings, they raise OSError instead of pretending to work. The caller should call
+    begin() again and retry.
 
 Usage:
     radio = SX127x(spi, cs_pin, reset_pin)
@@ -154,11 +155,29 @@ class SX127x:
         self.write_reg(REG_PA_DAC, 0x84)                        # normal power (not the +20 dBm mode)
         self.write_reg(REG_PA_CONFIG, 0x80 | (power - 2))
 
+    # ---- health check ----
+    def check(self):
+        """Make sure the chip still answers and is still in LoRa mode. Raises OSError if not.
+
+        Why: if the radio resets (a power dip or a bump), it wakes up in its default
+        non-LoRa mode. In that mode register 0x12 is a different setting, and writing
+        0xFF to it sets the bit that send() reads as "TX done". So without this check,
+        send() would return True even though no LoRa packet left the antenna.
+        Found on the bench on 2026-11-06 with _radio.reset()."""
+        version = self.read_reg(REG_VERSION)
+        if version != EXPECTED_VERSION:
+            raise OSError("radio not answering (version 0x{:02x}, expected 0x12)".format(version))
+        mode = self.read_reg(REG_OP_MODE)
+        if not mode & LONG_RANGE:
+            raise OSError("radio lost its LoRa settings (mode 0x{:02x})".format(mode))
+
     # ---- send ----
     def send(self, data, timeout_ms=5000):
-        """Send one packet and wait until it has left the antenna. Returns True on success."""
+        """Send one packet and wait until it has left the antenna. Returns True on success.
+        Raises OSError if the radio is not answering or is not in LoRa mode."""
         if len(data) > MAX_PACKET:
             raise ValueError("packet is {} bytes, the limit is 255".format(len(data)))
+        self.check()
         self.write_reg(REG_OP_MODE, LONG_RANGE | MODE_STANDBY)
         self.write_reg(REG_FIFO_ADDR_PTR, 0x00)
         self._write_fifo(data)
@@ -179,7 +198,9 @@ class SX127x:
     # ---- receive ----
     def receive(self, timeout_ms=5000):
         """Listen for one packet. Returns (data, rssi_dbm, snr_db), or None if nothing
-        good arrived in time. Packets with a bad CRC are skipped."""
+        good arrived in time. Packets with a bad CRC are skipped.
+        Raises OSError if the radio is not answering or is not in LoRa mode."""
+        self.check()
         self.write_reg(REG_IRQ_FLAGS, 0xFF)
         self.write_reg(REG_FIFO_ADDR_PTR, 0x00)
         self.write_reg(REG_OP_MODE, LONG_RANGE | MODE_RX_CONTINUOUS)

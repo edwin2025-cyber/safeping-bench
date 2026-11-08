@@ -230,17 +230,42 @@ def _lora_radio():
     return _radio
 
 
+def _lora_report(radio):
+    """Print what the radio says about itself, so a failure in the log shows its cause.
+    version 0x00 or 0xff = the board cannot talk to the radio (wire or power).
+    mode without 0x80 = the radio reset and lost its LoRa settings."""
+    if radio is None:
+        return
+    try:
+        print("LoRa check: version 0x{:02x}, mode 0x{:02x}".format(
+            radio.read_reg(0x42), radio.read_reg(0x01)))
+    except Exception as err:
+        print("LoRa check failed:", err)
+
+
 def lora_send(payload):
     """Fallback when WiFi fails. Sends the signed message as one LoRa packet.
-    Returns True if the radio says the packet left the antenna."""
-    try:
-        ok = _lora_radio().send(payload.encode())
-        if not ok:
-            print("LoRa failed: the radio never finished sending (5 s timeout)")
-        return ok
-    except Exception as err:             # no radio, bad wiring, or a packet over 255 bytes
-        print("LoRa failed:", err)
+    Returns True if the radio says the packet left the antenna.
+    If the first try fails, the radio is set up again from scratch and tried once more."""
+    global _radio
+    data = payload.encode()
+    if len(data) > 255:                  # retrying would not help, so stop here
+        print("LoRa failed: message is", len(data), "bytes, the limit is 255")
         return False
+    for attempt in (1, 2):
+        try:
+            if _lora_radio().send(data):
+                if attempt == 2:
+                    print("LoRa worked after setting the radio up again")
+                return True
+            print("LoRa failed: the radio never finished sending (5 s timeout)")
+        except Exception as err:         # no radio, bad wiring, or radio lost its settings
+            print("LoRa failed:", err)
+        _lora_report(_radio)
+        _radio = None                    # next _lora_radio() call runs begin() again
+        if attempt == 1:
+            print("LoRa: setting the radio up again and trying once more")
+    return False
 
 
 # ---------- the message ----------
