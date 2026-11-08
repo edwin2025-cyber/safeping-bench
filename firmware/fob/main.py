@@ -5,12 +5,13 @@ Runs in Wokwi or on the real board. Follows message-format.md (version 1).
 Button patterns
   1 press         STATUS      white blink, sent right away, never texts anyone
   2 presses       SUSPICIOUS  yellow slow blink, 2 s cancel window, then sent
-  3 or more       MEDICAL     red fast blink + steady buzz, 2 s cancel window, then sent
-  hold 5 s        SILENT      no light at all, buzz only, sent right away
+  3 or more       MEDICAL     red fast blink + pulsed buzz, 2 s cancel window, then sent
+  hold            SILENT      no light at all, buzz only, sent right away
+                              (hold time is HOLD_MS, 2 s on the bench in config.py)
 
 Cancel window
   The alert is held for 2 s before it is sent. A quick tap cancels it and nothing
-  is sent (message-format.md has no cancel message). Holding 5 s during the window
+  is sent (message-format.md has no cancel message). Holding during the window
   turns it into a SILENT alert instead. For MEDICAL, extra presses in the first
   0.6 s count as part of the pattern and do not cancel.
 
@@ -64,6 +65,12 @@ RGB_PINS = _cfg("RGB_PINS", (2, 4, 5))        # red, green, blue
 RGB_COMMON_ANODE = _cfg("RGB_COMMON_ANODE", False)
 NEOPIXEL_PIN = _cfg("NEOPIXEL_PIN", 8)
 MOTOR_PIN = _cfg("MOTOR_PIN", 18)             # drives the PN2222 base (or a stand-in LED in Wokwi)
+MOTOR_STRENGTH = _cfg("MOTOR_STRENGTH", 100)  # percent. PWM duty while the motor is on
+MOTOR_FREQ = _cfg("MOTOR_FREQ", 200)          # PWM switching speed in Hz
+MOTOR_MAX_MS = _cfg("MOTOR_MAX_MS", 5000)     # safety cap: the motor never stays on longer
+MEDICAL_PULSE_ON_MS = _cfg("MEDICAL_PULSE_ON_MS", 200)    # MEDICAL cancel window buzz
+MEDICAL_PULSE_OFF_MS = _cfg("MEDICAL_PULSE_OFF_MS", 100)
+RESULT_GAP_MS = _cfg("RESULT_GAP_MS", 300)    # silence before the sent / not sent buzz
 
 # LoRa radio (the fallback when WiFi fails). These are the bench wiring.
 LORA_SCK = _cfg("LORA_SCK", 10)
@@ -85,7 +92,8 @@ HOLD_MS = _cfg("HOLD_MS", 5000)                  # hold this long for SILENT
 CANCEL_MS = _cfg("CANCEL_MS", 2000)              # cancel window for SUSPICIOUS and MEDICAL
 COOLDOWN_MS = _cfg("COOLDOWN_MS", 3000)          # presses ignored this long after an alert
 CONFIRM_MS = _cfg("CONFIRM_MS", 3000)            # solid color shown after the alert is sent
-PRESS_TICK_MS = _cfg("PRESS_TICK_MS", 40)        # tiny buzz on each press (0 turns it off)
+PRESS_TICK_MS = _cfg("PRESS_TICK_MS", 0)         # buzz on each press. 0 = off (Edwin's choice
+                                                 # 2026-11-07: 40 ms was too short to feel)
 WIFI_TIMEOUT_MS = _cfg("WIFI_TIMEOUT_MS", 10000)
 SEND_ATTEMPTS = _cfg("SEND_ATTEMPTS", 3)
 LOOP_MS = 10
@@ -99,12 +107,15 @@ ORANGE = (255, 90, 0)
 OFF = (0, 0, 0)
 
 # Buzz patterns: list of (motor on? 1/0, milliseconds)
+# Chosen on the bench 2026-11-07 with tests/motor_test.py. The motor needs about
+# 50 to 100 ms to spin up, so 100 ms pulses felt too weak. "ok" and "fail" must feel
+# different without looking, because SILENT has no light.
 PATTERNS = {
     "tick": [(1, PRESS_TICK_MS)],
     "short": [(1, 150)],
     "one": [(1, 300)],
-    "ok": [(1, 100), (0, 100), (1, 100)],
-    "fail": [(1, 100), (0, 100), (1, 100), (0, 100), (1, 100)],
+    "ok": [(1, 250), (0, 150), (1, 250)],      # sent: two medium buzzes
+    "fail": [(1, 1200)],                        # not sent: one long buzz
 }
 
 # States
@@ -376,28 +387,78 @@ class Led:
 
 # ---------- vibration motor ----------
 class Motor:
+    """Vibration motor through the PN2222 on MOTOR_PIN.
+
+    PWM sets the strength (MOTOR_STRENGTH percent).
+    play(name)      runs one pattern from PATTERNS.
+    start_hold()    pulses (MEDICAL_PULSE_ON_MS on, MEDICAL_PULSE_OFF_MS off) until stop().
+    before_send()   turns the motor fully off right before the radio or WiFi sends.
+    Safety: the motor is never on for longer than MOTOR_MAX_MS in one go, and a pulsed
+    hold never lasts longer than MOTOR_MAX_MS either.
+
+    The motor must never run while the radio transmits. Bench test 2026-11-07: with the
+    motor on, every LoRa send timed out (version 0x12, mode 0x81, TX never finished).
+    With the motor off, the same send worked. Motor and radio share the 3V3 supply."""
+
     def __init__(self):
-        self.pin = Pin(MOTOR_PIN, Pin.OUT, value=0)
+        self.pwm = PWM(Pin(MOTOR_PIN), freq=MOTOR_FREQ, duty_u16=0)
+        self.on_duty = 65535 * max(0, min(100, MOTOR_STRENGTH)) // 100
         self.queue = []
         self.level = 0
         self.until = None
-        self.hold = False                 # True = buzz steadily until told otherwise
+        self.hold = False                 # True = pulse until told otherwise (MEDICAL)
+        self.hold_start = 0
+        self.on_since = None
+        self.shown = False
 
-    def play(self, name):
+    def _duty(self, value):
+        if hasattr(self.pwm, "duty_u16"):
+            self.pwm.duty_u16(value)
+        else:
+            self.pwm.duty(value // 64)
+
+    def _write(self, on, now):
+        if on:
+            if self.on_since is None:
+                self.on_since = now
+            elif time.ticks_diff(now, self.on_since) > MOTOR_MAX_MS:
+                print("motor safety cap reached, turning it off")
+                self.stop()
+                return
+        else:
+            self.on_since = None
+        on = bool(on)
+        if on != self.shown:
+            self.shown = on
+            self._duty(self.on_duty if on else 0)
+
+    def play(self, name, gap_ms=0):
+        """gap_ms = silence first, so the pattern does not blur into a buzz before it."""
         if name == "tick" and PRESS_TICK_MS <= 0:
             return
-        self.queue = list(PATTERNS[name])
+        self.queue = ([(0, gap_ms)] if gap_ms else []) + list(PATTERNS[name])
         self.until = None
         if name != "tick":
             print(">>> [VIBRATE: {}]".format(name))
         self.update(time.ticks_ms())
+
+    def start_hold(self):
+        self.hold = True
+        self.hold_start = time.ticks_ms()
+        self.update(self.hold_start)
+
+    def before_send(self):
+        """Called right before sending. Motor fully off while the radio transmits."""
+        self.stop()
 
     def stop(self):
         self.queue = []
         self.level = 0
         self.until = None
         self.hold = False
-        self.pin.value(0)
+        self.on_since = None
+        self.shown = False
+        self._duty(0)
 
     def busy(self):
         return bool(self.queue) or (self.until is not None and time.ticks_diff(time.ticks_ms(), self.until) < 0)
@@ -409,7 +470,15 @@ class Motor:
                 self.until = time.ticks_add(now, ms)
             else:
                 self.level, self.until = 0, None
-        self.pin.value(1 if (self.hold or self.level) else 0)
+        pulse = False
+        if self.hold:
+            elapsed = time.ticks_diff(now, self.hold_start)
+            if elapsed > MOTOR_MAX_MS:
+                print("motor safety cap reached, ending the MEDICAL buzz")
+                self.hold = False
+            else:
+                pulse = elapsed % (MEDICAL_PULSE_ON_MS + MEDICAL_PULSE_OFF_MS) < MEDICAL_PULSE_ON_MS
+        self._write(pulse or self.level, now)
 
     def run(self, name):
         """Play a pattern and wait for it to finish (used right before a slow network call)."""
@@ -487,7 +556,7 @@ class Fob:
     # --- sending ---
     def send(self, kind):
         """Build, sign and send one message. Returns True if the broker accepted it."""
-        self.motor.hold = self.motor.hold and kind == "MEDICAL"
+        self.motor.before_send()           # motor off while the radio transmits
         msg = build_message(kind)
         if "lat" in msg:
             print("location sent, accuracy about", msg["acc"], "m")
@@ -516,20 +585,20 @@ class Fob:
         self.motor.stop()
         color = {"SUSPICIOUS": YELLOW, "MEDICAL": RED}.get(kind, WHITE)
         if kind == "SILENT":
-            self.motor.play("ok" if ok else "fail")     # no light, ever
+            self.motor.play("ok" if ok else "fail", RESULT_GAP_MS)     # no light, ever
         elif kind == "STATUS":
             if ok:
                 self.led.show(WHITE, 150, 150, 300)
                 self.motor.play("short")
             else:
                 self.led.show(ORANGE, duration_ms=CONFIRM_MS)
-                self.motor.play("fail")
+                self.motor.play("fail", RESULT_GAP_MS)
         elif ok:
             self.led.show(color, duration_ms=CONFIRM_MS)    # solid = confirmed
-            self.motor.play("ok")
+            self.motor.play("ok", RESULT_GAP_MS)
         else:
             self.led.show(ORANGE, duration_ms=CONFIRM_MS)   # orange = connection problem
-            self.motor.play("fail")
+            self.motor.play("fail", RESULT_GAP_MS)
         self.refresh_battery()
         self.pending = None
         if kind == "STATUS":
@@ -557,7 +626,7 @@ class Fob:
         self.state = PENDING
         if kind == "MEDICAL":
             self.led.show(RED, 150, 150)
-            self.motor.hold = True
+            self.motor.start_hold()
         else:
             self.led.show(YELLOW, 500, 500)
             self.motor.play("one")
