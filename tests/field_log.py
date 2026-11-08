@@ -46,7 +46,7 @@ WAIT_FOR_RELAY_S = 5      # warn if the Relay has not printed an alert this long
 CSV_COLUMNS = [
     "ctr", "type", "fob_time", "fob_result", "relay_time", "received", "delay_s",
     "lat", "lon", "acc_m", "lat_deg", "lon_deg", "rssi_dbm", "snr_db", "same_message",
-    "lora_retry",
+    "lora_retry", "p_pa", "t_c", "bat_pct",
 ]
 
 
@@ -180,6 +180,9 @@ class Session:
                 "snr_db": r["snr"] if r and r["snr"] is not None else "",
                 "same_message": same,
                 "lora_retry": "yes" if f and f.get("retried") else "",
+                "p_pa": msg.get("p", ""),
+                "t_c": "{:.2f}".format(msg["t"] / 100) if "t" in msg else "",
+                "bat_pct": msg.get("bat", ""),
             })
         return rows
 
@@ -249,8 +252,16 @@ class Session:
     @staticmethod
     def _gps_text(msg):
         if "lat" in msg:
-            return "  GPS {}, {} acc {} m".format(micro_to_deg(msg["lat"]), micro_to_deg(msg["lon"]), msg.get("acc"))
-        return "  no GPS"
+            text = "  GPS {}, {} acc {} m".format(micro_to_deg(msg["lat"]), micro_to_deg(msg["lon"]), msg.get("acc"))
+        else:
+            text = "  no GPS"
+        if "p" in msg:
+            text += "  p {} Pa".format(msg["p"])
+        if "t" in msg:
+            text += "  t {:.2f} C".format(msg["t"] / 100)
+        if "bat" in msg:
+            text += "  bat {}%".format(msg["bat"])
+        return text
 
     @staticmethod
     def _list(items):

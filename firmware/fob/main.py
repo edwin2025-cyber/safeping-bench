@@ -85,6 +85,13 @@ GPS_TX = _cfg("GPS_TX", 11)
 GPS_RX = _cfg("GPS_RX", 12)
 GPS_MAX_AGE_S = _cfg("GPS_MAX_AGE_S", 60)         # a fix older than this is not sent
 
+# I2C bus: BME280 on the Qwiic port and the board's own MAX17048 battery gauge (0x36).
+# Bench scan 2026-11-07: I2C(0) is SDA 23, SCL 24 and shows 0x36 and 0x77.
+I2C_SDA = _cfg("I2C_SDA", 23)
+I2C_SCL = _cfg("I2C_SCL", 24)
+BME280_ADDR = _cfg("BME280_ADDR", 0x77)            # SparkFun default. 0x76 if the jumper is cut
+LOW_BATTERY_PCT = _cfg("LOW_BATTERY_PCT", 20)      # LED dims below this
+
 # Timing, in milliseconds
 DEBOUNCE_MS = _cfg("DEBOUNCE_MS", 30)
 MULTI_WINDOW_MS = _cfg("MULTI_WINDOW_MS", 600)   # gap that ends a press pattern
@@ -219,9 +226,64 @@ def read_gps():
     return _gps.lat_e6, _gps.lon_e6, max(acc, 1)
 
 
+_bme = None
+_gauge = None
+
+
+def sensors_start():
+    """Start the BME280 and the battery gauge. Returns a short status line.
+    The Fob still works if either one is missing."""
+    global _bme, _gauge
+    try:
+        from machine import I2C
+        i2c = I2C(0, scl=Pin(I2C_SCL), sda=Pin(I2C_SDA), freq=400000)
+    except Exception as err:
+        return "I2C off: {}".format(err)
+    parts = []
+    try:
+        import bme280
+        _bme = bme280.BME280(i2c, BME280_ADDR)
+        parts.append("pressure on")
+    except Exception as err:            # no bme280.py, not plugged in, or wrong address
+        _bme = None
+        parts.append("pressure off ({})".format(err))
+    try:
+        import max17048
+        _gauge = max17048.MAX17048(i2c)
+        parts.append("battery gauge on")
+    except Exception as err:
+        _gauge = None
+        parts.append("battery gauge off ({})".format(err))
+    return ", ".join(parts)
+
+
+def read_battery():
+    """Battery percent, or None if there is no gauge.
+    Note: with no LiPo plugged in, the gauge still answers but the number means nothing."""
+    if _gauge is None:
+        return None
+    try:
+        return _gauge.percent()
+    except Exception as err:
+        print("battery read error:", err)
+        return None
+
+
 def read_sensors():
-    """Return a dict that may hold p (pascals), t (hundredths of C), bat (percent)."""
-    return {}
+    """Return a dict that may hold p (pascals), t (hundredths of C), bat (percent).
+    A sensor that fails is left out, so the alert still goes out."""
+    out = {}
+    if _bme is not None:
+        try:
+            p, t = _bme.read()
+            if p is not None:
+                out["p"], out["t"] = p, t
+        except Exception as err:
+            print("pressure read error:", err)
+    bat = read_battery()
+    if bat is not None:
+        out["bat"] = bat
+    return out
 
 
 _radio = None
@@ -533,6 +595,7 @@ class Fob:
         if SECRET_KEY.startswith("paste-the-key"):
             print("WARNING: SECRET_KEY is the placeholder. The server will reject every message.")
         print("GPS on" if gps_start() else "GPS not started, alerts will have no location")
+        print("Sensors:", sensors_start())
         self.led.show(WHITE, duration_ms=200)
         self.motor.run("tick")
         time.sleep_ms(250)
@@ -550,8 +613,8 @@ class Fob:
         self.refresh_battery()
 
     def refresh_battery(self):
-        bat = read_sensors().get("bat")
-        self.led.scale = 40 if (bat is not None and bat < 20) else 100
+        bat = read_battery()
+        self.led.scale = 40 if (bat is not None and bat < LOW_BATTERY_PCT) else 100
 
     # --- sending ---
     def send(self, kind):
